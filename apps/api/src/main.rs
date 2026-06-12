@@ -1,17 +1,28 @@
 use axum::{
+    extract::State,
+    http::StatusCode,
     routing::get,
     Json, Router,
 };
+use dotenvy::dotenv;
 use serde::Serialize;
+use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
 use tower_http::cors::CorsLayer;
+use uuid::Uuid;
 
-#[derive(Serialize)]
+#[derive(Clone)]
+struct AppState {
+    db: PgPool,
+}
+
+#[derive(Serialize, FromRow)]
 struct Product {
-    id: String,
+    id: Uuid,
+    slug: String,
     name: String,
     description: String,
     price_cents: i32,
-    image_url: String,
+    image_url: Option<String>,
     category: String,
 }
 
@@ -19,40 +30,53 @@ async fn health() -> &'static str {
     "Charmaine Cat Studio API is running 🐱"
 }
 
-async fn list_products() -> Json<Vec<Product>> {
-    Json(vec![
-        Product {
-            id: "mango-mission-shirt".to_string(),
-            name: "Mango Mission T-Shirt".to_string(),
-            description: "A cute Charmaine Cat design for mango lovers and coding cats.".to_string(),
-            price_cents: 2500,
-            image_url: "/products/mango-mission.png".to_string(),
-            category: "Merchandise".to_string(),
-        },
-        Product {
-            id: "rust-dev-cat".to_string(),
-            name: "Rust Developer Cat".to_string(),
-            description: "For developers who like safe code, fast APIs, and small cute cats.".to_string(),
-            price_cents: 3000,
-            image_url: "/products/rust-dev-cat.png".to_string(),
-            category: "Merchandise".to_string(),
-        },
-        Product {
-            id: "buy-charmaine-a-mango".to_string(),
-            name: "Buy Charmaine Cat a Mango".to_string(),
-            description: "A virtual support item for Charmaine Cat Studio.".to_string(),
-            price_cents: 500,
-            image_url: "/products/mango-support.png".to_string(),
-            category: "Support".to_string(),
-        },
-    ])
+async fn list_products(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<Product>>, StatusCode> {
+    let products = sqlx::query_as::<_, Product>(
+        r#"
+        SELECT
+            id,
+            slug,
+            name,
+            description,
+            price_cents,
+            image_url,
+            category
+        FROM products
+        WHERE active = true
+        ORDER BY created_at ASC
+        "#,
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|err| {
+        eprintln!("Failed to fetch products: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(products))
 }
 
 #[tokio::main]
 async fn main() {
+    dotenv().ok();
+
+    let database_url =
+        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+
+    let db = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&database_url)
+        .await
+        .expect("failed to connect to database");
+
+    let state = AppState { db };
+
     let app = Router::new()
         .route("/health", get(health))
         .route("/products", get(list_products))
+        .with_state(state)
         .layer(CorsLayer::permissive());
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")

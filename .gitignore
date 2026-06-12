@@ -1,0 +1,40 @@
+# Rust
+target/
+ 
+
+# Environment
+.env
+.env.*
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Node
+node_modules/
+dist/
+
+# Logs
+*.log
+
+# Coverage
+coverage/
+
+# Build artifacts
+build/
+
+# Temporary files
+tmp/
+temp/
+
+# Vite
+apps/storefront/dist/
+
+# Rust local SQLx cache
+.sqlx/
+
+# Docker
+docker-data/

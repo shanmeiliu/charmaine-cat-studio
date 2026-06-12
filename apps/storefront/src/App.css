@@ -1,0 +1,86 @@
+body {
+  margin: 0;
+  background: #fff7ed;
+  color: #2d1b0e;
+  font-family: Inter, system-ui, sans-serif;
+}
+
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 48px 24px;
+}
+
+.hero {
+  margin-bottom: 40px;
+}
+
+.eyebrow {
+  font-weight: 700;
+  color: #c2410c;
+}
+
+.hero h1 {
+  font-size: clamp(2.4rem, 6vw, 4.8rem);
+  line-height: 1;
+  margin: 0 0 16px;
+}
+
+.hero p {
+  max-width: 680px;
+  font-size: 1.2rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 24px;
+}
+
+.card {
+  background: white;
+  border: 2px solid #fed7aa;
+  border-radius: 24px;
+  padding: 20px;
+  box-shadow: 0 16px 40px rgba(124, 45, 18, 0.12);
+}
+
+.imagePlaceholder {
+  height: 180px;
+  border-radius: 18px;
+  background: #ffedd5;
+  display: grid;
+  place-items: center;
+  font-size: 4rem;
+}
+
+.category {
+  color: #ea580c;
+  font-weight: 700;
+  margin-top: 18px;
+}
+
+.card h2 {
+  margin: 6px 0;
+}
+
+.cardFooter {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 20px;
+}
+
+button {
+  border: 0;
+  border-radius: 999px;
+  background: #f97316;
+  color: white;
+  font-weight: 700;
+  padding: 10px 16px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #ea580c;
+}

@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     routing::get,
     Json, Router,
@@ -29,10 +29,40 @@ struct Product {
 async fn health() -> &'static str {
     "Charmaine Cat Studio API is running 🐱"
 }
-
-async fn list_products(
+async fn get_product_by_slug(
     State(state): State<AppState>,
-) -> Result<Json<Vec<Product>>, StatusCode> {
+    Path(slug): Path<String>,
+) -> Result<Json<Product>, StatusCode> {
+    let product = sqlx::query_as::<_, Product>(
+        r#"
+        SELECT
+            id,
+            slug,
+            name,
+            description,
+            price_cents,
+            image_url,
+            category
+        FROM products
+        WHERE slug = $1
+          AND active = true
+        "#,
+    )
+    .bind(slug)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|err| {
+        eprintln!("Failed to fetch product: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    match product {
+        Some(product) => Ok(Json(product)),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+async fn list_products(State(state): State<AppState>) -> Result<Json<Vec<Product>>, StatusCode> {
     let products = sqlx::query_as::<_, Product>(
         r#"
         SELECT
@@ -62,8 +92,7 @@ async fn list_products(
 async fn main() {
     dotenv().ok();
 
-    let database_url =
-        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
     let db = PgPoolOptions::new()
         .max_connections(5)
@@ -76,6 +105,7 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health))
         .route("/products", get(list_products))
+        .route("/products/{slug}", get(get_product_by_slug))
         .with_state(state)
         .layer(CorsLayer::permissive());
 
@@ -85,7 +115,5 @@ async fn main() {
 
     println!("🐱 Charmaine Cat Studio API running on http://localhost:8080");
 
-    axum::serve(listener, app)
-        .await
-        .expect("server failed");
+    axum::serve(listener, app).await.expect("server failed");
 }

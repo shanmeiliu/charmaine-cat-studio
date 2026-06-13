@@ -84,3 +84,147 @@ button {
 button:hover {
   background: #ea580c;
 }
+
+.buttonLink {
+  border: 0;
+  border-radius: 999px;
+  background: #f97316;
+  color: white;
+  font-weight: 700;
+  padding: 10px 16px;
+  text-decoration: none;
+}
+
+.buttonLink:hover {
+  background: #ea580c;
+}
+
+.detail {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 40px;
+  align-items: center;
+}
+
+.backLink {
+  grid-column: 1 / -1;
+  color: #c2410c;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.detailImage {
+  min-height: 420px;
+  border-radius: 32px;
+  background: #ffedd5;
+  display: grid;
+  place-items: center;
+  font-size: 8rem;
+  border: 2px solid #fed7aa;
+}
+
+.price {
+  display: block;
+  font-size: 1.5rem;
+  margin: 24px 0;
+}
+
+@media (max-width: 760px) {
+  .detail {
+    grid-template-columns: 1fr;
+  }
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 72px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid #fed7aa;
+}
+
+.brand,
+.cartLink {
+  color: #c2410c;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.cartLink {
+  background: #ffedd5;
+  border: 2px solid #fed7aa;
+  border-radius: 999px;
+  padding: 10px 16px;
+}
+
+.checkout {
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.checkout h1 {
+  font-size: 2.75rem;
+  margin-bottom: 32px;
+}
+
+.emptyCart {
+  background: white;
+  border: 2px solid #fed7aa;
+  border-radius: 24px;
+  padding: 48px;
+  text-align: center;
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+
+  /* max-width: 500px;
+  margin: 0 auto; */
+}
+
+.emptyCart p {
+  margin: 0;
+}
+
+.cartItems {
+  display: grid;
+  gap: 16px;
+}
+
+.cartItem {
+  background: white;
+  border: 2px solid #fed7aa;
+  border-radius: 24px;
+  padding: 20px;
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: center;
+}
+
+.cartItem h2 {
+  margin: 0 0 8px;
+}
+
+.checkoutSummary {
+  margin-top: 24px;
+  background: #ffedd5;
+  border: 2px solid #fed7aa;
+  border-radius: 24px;
+  padding: 20px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.secondaryButton {
+  background: #9a3412;
+}
+
+.secondaryButton:hover {
+  background: #7c2d12;
+}

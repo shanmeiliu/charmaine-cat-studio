@@ -12,24 +12,32 @@ body {
 }
 
 .hero {
-  margin-bottom: 40px;
+  text-align: center;
+  margin: 80px 0 60px;
+}
+
+.hero p {
+  max-width: 700px;
+  margin: 0 auto;
+  line-height: 1.6;
 }
 
 .eyebrow {
   font-weight: 700;
   color: #c2410c;
+  text-align: center;
 }
 
 .hero h1 {
-  font-size: clamp(2.4rem, 6vw, 4.8rem);
-  line-height: 1;
-  margin: 0 0 16px;
+  max-width: 900px;
+  margin: 0 auto 24px;
+  line-height: 1.05;
 }
 
-.hero p {
+/* .hero p {
   max-width: 680px;
   font-size: 1.2rem;
-}
+} */
 
 .grid {
   display: grid;

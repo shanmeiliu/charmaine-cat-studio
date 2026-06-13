@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
 export type CartItem = {
@@ -28,7 +28,23 @@ type CartContextValue = {
 const CartContext = createContext<CartContextValue | null>(null);
 
 export function CartProvider({ children }: { children: ReactNode }) {
-  const [items, setItems] = useState<CartItem[]>([]);
+  const [items, setItems] = useState<CartItem[]>(() => {
+  const saved = localStorage.getItem("charmaine-cat-cart");
+
+  if (!saved) {
+    return [];
+  }
+
+  try {
+    return JSON.parse(saved);
+  } catch {
+    return [];
+  }
+});
+
+useEffect(() => {
+  localStorage.setItem("charmaine-cat-cart", JSON.stringify(items));
+}, [items]);
 
   function addToCart(product: ProductInput) {
     setItems((current) => {

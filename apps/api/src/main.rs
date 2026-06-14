@@ -1,11 +1,11 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use dotenvy::dotenv;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
@@ -24,6 +24,24 @@ struct Product {
     price_cents: i32,
     image_url: Option<String>,
     category: String,
+}
+
+#[derive(Deserialize)]
+struct CreateOrderRequest {
+    items: Vec<CreateOrderItem>,
+}
+
+#[derive(Deserialize)]
+struct CreateOrderItem {
+    product_id: Uuid,
+    quantity: i32,
+}
+
+#[derive(Serialize)]
+struct CreateOrderResponse {
+    order_id: Uuid,
+    status: String,
+    total_cents: i32,
 }
 
 async fn health() -> &'static str {
@@ -60,6 +78,121 @@ async fn get_product_by_slug(
         Some(product) => Ok(Json(product)),
         None => Err(StatusCode::NOT_FOUND),
     }
+}
+
+async fn create_order(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateOrderRequest>,
+) -> Result<Json<CreateOrderResponse>, StatusCode> {
+    if payload.items.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let mut tx = state.db.begin().await.map_err(|err| {
+        eprintln!("Failed to begin transaction: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let mut total_cents = 0;
+
+    for item in &payload.items {
+        if item.quantity <= 0 {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+
+        let product = sqlx::query!(
+            r#"
+            SELECT id, name, price_cents
+            FROM products
+            WHERE id = $1
+              AND active = true
+            "#,
+            item.product_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| {
+            eprintln!("Failed to fetch product for order: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        let product = product.ok_or(StatusCode::BAD_REQUEST)?;
+
+        total_cents += product.price_cents * item.quantity;
+    }
+
+    let order = sqlx::query!(
+        r#"
+        INSERT INTO orders (status, total_cents)
+        VALUES ('pending', $1)
+        RETURNING id, status, total_cents
+        "#,
+        total_cents
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|err| {
+        eprintln!("Failed to create order: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    for item in &payload.items {
+        let product = sqlx::query!(
+            r#"
+            SELECT id, name, price_cents
+            FROM products
+            WHERE id = $1
+              AND active = true
+            "#,
+            item.product_id
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| {
+            eprintln!("Failed to fetch product for order item: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        let line_total_cents = product.price_cents * item.quantity;
+
+        sqlx::query!(
+            r#"
+            INSERT INTO order_items
+            (
+                order_id,
+                product_id,
+                product_name,
+                unit_price_cents,
+                quantity,
+                line_total_cents
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            "#,
+            order.id,
+            product.id,
+            product.name,
+            product.price_cents,
+            item.quantity,
+            line_total_cents
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| {
+            eprintln!("Failed to create order item: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    }
+
+    tx.commit().await.map_err(|err| {
+        eprintln!("Failed to commit order transaction: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(CreateOrderResponse {
+        order_id: order.id,
+        status: order.status,
+        total_cents: order.total_cents,
+    }))
 }
 
 async fn list_products(State(state): State<AppState>) -> Result<Json<Vec<Product>>, StatusCode> {
@@ -106,6 +239,7 @@ async fn main() {
         .route("/health", get(health))
         .route("/products", get(list_products))
         .route("/products/{slug}", get(get_product_by_slug))
+        .route("/orders", post(create_order))
         .with_state(state)
         .layer(CorsLayer::permissive());
 

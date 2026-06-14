@@ -31,6 +31,24 @@ struct CreateOrderRequest {
     items: Vec<CreateOrderItem>,
 }
 
+#[derive(Serialize)]
+struct OrderDetailResponse {
+    id: Uuid,
+    status: String,
+    total_cents: i32,
+    items: Vec<OrderItemResponse>,
+}
+
+#[derive(Serialize, FromRow)]
+struct OrderItemResponse {
+    id: Uuid,
+    product_id: Uuid,
+    product_name: String,
+    unit_price_cents: i32,
+    quantity: i32,
+    line_total_cents: i32,
+}
+
 #[derive(Deserialize)]
 struct CreateOrderItem {
     product_id: Uuid,
@@ -195,6 +213,57 @@ async fn create_order(
     }))
 }
 
+async fn get_order_by_id(
+    State(state): State<AppState>,
+    Path(order_id): Path<Uuid>,
+) -> Result<Json<OrderDetailResponse>, StatusCode> {
+    let order = sqlx::query!(
+        r#"
+        SELECT id, status, total_cents
+        FROM orders
+        WHERE id = $1
+        "#,
+        order_id
+    )
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|err| {
+        eprintln!("Failed to fetch order: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let order = order.ok_or(StatusCode::NOT_FOUND)?;
+
+    let items = sqlx::query_as::<_, OrderItemResponse>(
+        r#"
+        SELECT
+            id,
+            product_id,
+            product_name,
+            unit_price_cents,
+            quantity,
+            line_total_cents
+        FROM order_items
+        WHERE order_id = $1
+        ORDER BY id ASC
+        "#,
+    )
+    .bind(order_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|err| {
+        eprintln!("Failed to fetch order items: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(OrderDetailResponse {
+        id: order.id,
+        status: order.status,
+        total_cents: order.total_cents,
+        items,
+    }))
+}
+
 async fn list_products(State(state): State<AppState>) -> Result<Json<Vec<Product>>, StatusCode> {
     let products = sqlx::query_as::<_, Product>(
         r#"
@@ -240,6 +309,7 @@ async fn main() {
         .route("/products", get(list_products))
         .route("/products/{slug}", get(get_product_by_slug))
         .route("/orders", post(create_order))
+        .route("/orders/{id}", get(get_order_by_id))
         .with_state(state)
         .layer(CorsLayer::permissive());
 

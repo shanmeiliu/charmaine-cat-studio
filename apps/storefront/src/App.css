@@ -236,3 +236,14 @@ button:hover {
 .secondaryButton:hover {
   background: #7c2d12;
 }
+
+.errorText {
+  color: #b91c1c;
+  font-weight: 700;
+  width: 100%;
+}
+
+.successText {
+  color: #166534;
+  font-weight: 700;
+}

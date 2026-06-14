@@ -54,7 +54,6 @@ function ProductListPage() {
   return (
     <>
       <section className="hero">
-        <p className="eyebrow">🐱 Charmaine Cat Studio</p>
         <h1>Merch, digital collectibles, and cute coding cat designs.</h1>
         <p>
           Support Charmaine Cat by buying a virtual mango, a T-shirt, or a
@@ -125,19 +124,68 @@ function ProductDetailPage() {
 
 function CheckoutPage() {
   const { items, subtotalCents, removeFromCart, clearCart } = useCart();
+  const [isCreatingOrder, setIsCreatingOrder] = useState(false);
+  const [orderId, setOrderId] = useState<string | null>(null);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
+
+  async function handleCheckout() {
+    setIsCreatingOrder(true);
+    setCheckoutError(null);
+
+    try {
+      const response = await fetch("http://localhost:8080/orders", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          items: items.map((item) => ({
+            product_id: item.id,
+            quantity: item.quantity,
+          })),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to create order");
+      }
+
+      const data = await response.json();
+
+      setOrderId(data.order_id);
+      clearCart();
+    } catch (error) {
+      console.error(error);
+      setCheckoutError("Could not create order. Please try again.");
+    } finally {
+      setIsCreatingOrder(false);
+    }
+  }
 
   return (
     <section className="checkout">
       <h1>Your Cart</h1>
 
-      {items.length === 0 ? (
+      {orderId && (
+        <div className="emptyCart">
+          <p className="successText">Order created successfully.</p>
+          <p>{orderId}</p>
+          <Link to="/" className="buttonLink">
+            Continue shopping
+          </Link>
+        </div>
+      )}
+
+      {!orderId && items.length === 0 && (
         <div className="emptyCart">
           <p>Your cart is empty.</p>
           <Link to="/" className="buttonLink">
             Browse products
           </Link>
         </div>
-      ) : (
+      )}
+
+      {!orderId && items.length > 0 && (
         <>
           <div className="cartItems">
             {items.map((item) => (
@@ -155,10 +203,16 @@ function CheckoutPage() {
 
           <div className="checkoutSummary">
             <strong>Subtotal: {formatPrice(subtotalCents)}</strong>
-            <button>Checkout</button>
+
+            <button onClick={handleCheckout} disabled={isCreatingOrder}>
+              {isCreatingOrder ? "Creating order..." : "Checkout"}
+            </button>
+
             <button className="secondaryButton" onClick={clearCart}>
               Clear cart
             </button>
+
+            {checkoutError && <p className="errorText">{checkoutError}</p>}
           </div>
         </>
       )}

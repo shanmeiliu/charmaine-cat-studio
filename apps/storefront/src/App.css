@@ -247,3 +247,18 @@ button:hover {
   color: #166534;
   font-weight: 700;
 }
+
+.paypalPayment {
+  width: min(100%, 420px);
+  border-top: 1px solid #fed7aa;
+  padding-top: 20px;
+}
+
+.paypalButtons {
+  min-height: 45px;
+  margin-top: 16px;
+}
+
+.paypalPayment .errorText {
+  margin-top: 12px;
+}

@@ -1,7 +1,9 @@
-import { Link, Route, Routes, useParams } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useCart } from "./context/CartContext";
 import "./App.css";
+
+const API_BASE_URL = "http://localhost:8080";
 
 type Product = {
   id: string;
@@ -13,8 +15,83 @@ type Product = {
   category: string;
 };
 
+type OrderDetail = {
+  id: string;
+  status: string;
+  total_cents: number;
+  items: {
+    id: string;
+    product_id: string;
+    product_name: string;
+    unit_price_cents: number;
+    quantity: number;
+    line_total_cents: number;
+  }[];
+};
+
+type PayPalButtonsOptions = {
+  createOrder: () => Promise<string>;
+  onApprove: (data: { orderID: string }) => Promise<void>;
+  onCancel: () => void;
+  onError: (error: unknown) => void;
+  style: {
+    color: string;
+    label: string;
+    layout: string;
+    shape: string;
+  };
+};
+
+type PayPalButtons = {
+  render: (container: HTMLElement) => Promise<void>;
+  close: () => Promise<void>;
+};
+
+declare global {
+  interface Window {
+    paypal?: {
+      Buttons: (options: PayPalButtonsOptions) => PayPalButtons;
+    };
+  }
+}
+
 function formatPrice(cents: number) {
   return `$${(cents / 100).toFixed(2)} CAD`;
+}
+
+function loadPayPalScript(clientId: string) {
+  if (window.paypal) {
+    return Promise.resolve();
+  }
+
+  const existingScript = document.querySelector<HTMLScriptElement>(
+    'script[data-paypal-sdk="true"]',
+  );
+
+  if (existingScript) {
+    return new Promise<void>((resolve, reject) => {
+      existingScript.addEventListener("load", () => resolve(), { once: true });
+      existingScript.addEventListener(
+        "error",
+        () => reject(new Error("PayPal SDK failed to load")),
+        { once: true },
+      );
+    });
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(clientId)}&currency=CAD&components=buttons`;
+    script.async = true;
+    script.dataset.paypalSdk = "true";
+    script.addEventListener("load", () => resolve(), { once: true });
+    script.addEventListener(
+      "error",
+      () => reject(new Error("PayPal SDK failed to load")),
+      { once: true },
+    );
+    document.head.appendChild(script);
+  });
 }
 
 function Layout() {
@@ -36,6 +113,7 @@ function Layout() {
         <Route path="/" element={<ProductListPage />} />
         <Route path="/products/:slug" element={<ProductDetailPage />} />
         <Route path="/checkout" element={<CheckoutPage />} />
+        <Route path="/orders/:id" element={<OrderConfirmationPage />} />
       </Routes>
     </>
   );
@@ -45,7 +123,7 @@ function ProductListPage() {
   const [products, setProducts] = useState<Product[]>([]);
 
   useEffect(() => {
-    fetch("http://localhost:8080/products")
+    fetch(`${API_BASE_URL}/products`)
       .then((res) => res.json())
       .then(setProducts)
       .catch(console.error);
@@ -87,7 +165,7 @@ function ProductDetailPage() {
   const [product, setProduct] = useState<Product | null>(null);
 
   useEffect(() => {
-    fetch(`http://localhost:8080/products/${slug}`)
+    fetch(`${API_BASE_URL}/products/${slug}`)
       .then((res) => {
         if (!res.ok) {
           throw new Error("Product not found");
@@ -125,15 +203,15 @@ function ProductDetailPage() {
 function CheckoutPage() {
   const { items, subtotalCents, removeFromCart, clearCart } = useCart();
   const [isCreatingOrder, setIsCreatingOrder] = useState(false);
-  const [orderId, setOrderId] = useState<string | null>(null);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   async function handleCheckout() {
     setIsCreatingOrder(true);
     setCheckoutError(null);
 
     try {
-      const response = await fetch("http://localhost:8080/orders", {
+      const response = await fetch(`${API_BASE_URL}/orders`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -152,8 +230,8 @@ function CheckoutPage() {
 
       const data = await response.json();
 
-      setOrderId(data.order_id);
       clearCart();
+      navigate(`/orders/${data.order_id}`);
     } catch (error) {
       console.error(error);
       setCheckoutError("Could not create order. Please try again.");
@@ -166,17 +244,7 @@ function CheckoutPage() {
     <section className="checkout">
       <h1>Your Cart</h1>
 
-      {orderId && (
-        <div className="emptyCart">
-          <p className="successText">Order created successfully.</p>
-          <p>{orderId}</p>
-          <Link to="/" className="buttonLink">
-            Continue shopping
-          </Link>
-        </div>
-      )}
-
-      {!orderId && items.length === 0 && (
+      {items.length === 0 && (
         <div className="emptyCart">
           <p>Your cart is empty.</p>
           <Link to="/" className="buttonLink">
@@ -185,7 +253,7 @@ function CheckoutPage() {
         </div>
       )}
 
-      {!orderId && items.length > 0 && (
+      {items.length > 0 && (
         <>
           <div className="cartItems">
             {items.map((item) => (
@@ -217,6 +285,190 @@ function CheckoutPage() {
         </>
       )}
     </section>
+  );
+}
+
+function OrderConfirmationPage() {
+  const { id } = useParams();
+  const [order, setOrder] = useState<OrderDetail | null>(null);
+  const [orderError, setOrderError] = useState<string | null>(null);
+
+  const loadOrder = useCallback(async () => {
+    setOrderError(null);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/orders/${id}`);
+
+      if (!response.ok) {
+        throw new Error("Order not found");
+      }
+
+      setOrder(await response.json());
+    } catch (error) {
+      console.error(error);
+      setOrderError("Could not load this order.");
+    }
+  }, [id]);
+
+  useEffect(() => {
+    void loadOrder();
+  }, [loadOrder]);
+
+  if (orderError) {
+    return <p className="errorText">{orderError}</p>;
+  }
+
+  if (!order) {
+    return <p>Loading order...</p>;
+  }
+
+  return (
+    <section className="checkout">
+      <h1>Order Created</h1>
+
+      <div className="emptyCart">
+        <p className="successText">Thank you for supporting Charmaine Cat.</p>
+        <p>
+          Order ID: <strong>{order.id}</strong>
+        </p>
+        <p>
+          Status: <strong>{order.status}</strong>
+        </p>
+        <p>
+          Total: <strong>{formatPrice(order.total_cents)}</strong>
+        </p>
+
+        {order.status === "pending" && (
+          <PayPalPayment orderId={order.id} onPaid={loadOrder} />
+        )}
+
+        <Link to="/" className="buttonLink">
+          Continue shopping
+        </Link>
+      </div>
+
+      <div className="cartItems" style={{ marginTop: 24 }}>
+        {order.items.map((item) => (
+          <article className="cartItem" key={item.id}>
+            <div>
+              <h2>{item.product_name}</h2>
+              <p>Quantity: {item.quantity}</p>
+              <p>{formatPrice(item.unit_price_cents)} each</p>
+            </div>
+
+            <strong>{formatPrice(item.line_total_cents)}</strong>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PayPalPayment({
+  orderId,
+  onPaid,
+}: {
+  orderId: string;
+  onPaid: () => Promise<void>;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const clientId = import.meta.env.VITE_PAYPAL_CLIENT_ID;
+    let buttons: PayPalButtons | undefined;
+    let cancelled = false;
+
+    if (!clientId) {
+      setPaymentError("PayPal is not configured.");
+      return;
+    }
+
+    async function renderButtons() {
+      try {
+        await loadPayPalScript(clientId);
+
+        if (cancelled || !window.paypal || !containerRef.current) {
+          return;
+        }
+
+        buttons = window.paypal.Buttons({
+          style: {
+            color: "gold",
+            label: "paypal",
+            layout: "vertical",
+            shape: "pill",
+          },
+          async createOrder() {
+            setPaymentError(null);
+
+            const response = await fetch(
+              `${API_BASE_URL}/payments/paypal/create-order`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ order_id: orderId }),
+              },
+            );
+
+            if (!response.ok) {
+              throw new Error("Could not start PayPal checkout");
+            }
+
+            const result = await response.json();
+            return result.paypal_order_id;
+          },
+          async onApprove(data) {
+            const response = await fetch(
+              `${API_BASE_URL}/payments/paypal/capture-order`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  order_id: orderId,
+                  paypal_order_id: data.orderID,
+                }),
+              },
+            );
+
+            if (!response.ok) {
+              throw new Error("PayPal payment could not be captured");
+            }
+
+            await onPaid();
+          },
+          onCancel() {
+            setPaymentError("PayPal checkout was cancelled.");
+          },
+          onError(error) {
+            console.error(error);
+            setPaymentError("PayPal payment failed. Please try again.");
+          },
+        });
+
+        await buttons.render(containerRef.current);
+      } catch (error) {
+        console.error(error);
+        setPaymentError("PayPal payment failed. Please try again.");
+      }
+    }
+
+    void renderButtons();
+
+    return () => {
+      cancelled = true;
+      if (buttons) {
+        void buttons.close();
+      }
+    };
+  }, [onPaid, orderId]);
+
+  return (
+    <div className="paypalPayment">
+      <p>Complete your payment securely with PayPal Sandbox.</p>
+      <div ref={containerRef} className="paypalButtons" />
+      {paymentError && <p className="errorText">{paymentError}</p>}
+    </div>
   );
 }
 

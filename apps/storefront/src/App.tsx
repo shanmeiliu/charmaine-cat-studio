@@ -105,6 +105,18 @@ function shortOrderId(id: string) {
   return id.slice(0, 8);
 }
 
+function resolveImageUrl(imageUrl: string | null) {
+  if (!imageUrl) {
+    return null;
+  }
+
+  if (imageUrl.startsWith("/uploads")) {
+    return `${API_BASE_URL}${imageUrl}`;
+  }
+
+  return imageUrl;
+}
+
 function productToFormValues(product: AdminProduct): ProductFormValues {
   const isDefaultCategory =
     product.category !== CUSTOM_CATEGORY_OPTION &&
@@ -260,7 +272,17 @@ function ProductListPage() {
       <section className="grid">
         {products.map((product) => (
           <article className="card" key={product.id}>
-            <div className="imagePlaceholder">🐱</div>
+            <div className="imagePlaceholder">
+              {resolveImageUrl(product.image_url) ? (
+                <img
+                  alt={product.name}
+                  className="productImage"
+                  src={resolveImageUrl(product.image_url) ?? undefined}
+                />
+              ) : (
+                "🐱"
+              )}
+            </div>
             <p className="category">{product.category}</p>
             <h2>{product.name}</h2>
             <p>{product.description}</p>
@@ -304,7 +326,17 @@ function ProductDetailPage() {
         ← Back to studio
       </Link>
 
-      <div className="detailImage">🐱</div>
+      <div className="detailImage">
+        {resolveImageUrl(product.image_url) ? (
+          <img
+            alt={product.name}
+            className="productImage"
+            src={resolveImageUrl(product.image_url) ?? undefined}
+          />
+        ) : (
+          "🐱"
+        )}
+      </div>
 
       <div>
         <p className="category">{product.category}</p>
@@ -999,11 +1031,42 @@ function ProductForm({
   disabled: boolean;
   secondaryAction?: ReactNode;
 }) {
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const previewImageUrl = resolveImageUrl(values.image_url);
+
   function updateField<Field extends keyof ProductFormValues>(
     field: Field,
     value: ProductFormValues[Field],
   ) {
     onChange({ ...values, [field]: value });
+  }
+
+  async function uploadImage(file: File) {
+    setIsUploadingImage(true);
+    setUploadError(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch(`${API_BASE_URL}/admin/uploads/product-image`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error("Upload failed");
+      }
+
+      const data: { image_url: string } = await response.json();
+      updateField("image_url", data.image_url);
+    } catch (error) {
+      console.error(error);
+      setUploadError("Could not upload image. Use PNG, JPEG, WebP, or SVG under 5MB.");
+    } finally {
+      setIsUploadingImage(false);
+    }
   }
 
   return (
@@ -1091,6 +1154,32 @@ function ProductForm({
           placeholder="https://example.com/product.png"
         />
       </label>
+
+      <label className="adminWideField">
+        <span>Upload image</span>
+        <input
+          accept="image/png,image/jpeg,image/webp,image/svg+xml"
+          disabled={isUploadingImage}
+          type="file"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+
+            if (file) {
+              void uploadImage(file);
+            }
+          }}
+        />
+      </label>
+
+      {(previewImageUrl || isUploadingImage || uploadError) && (
+        <div className="adminImagePreview">
+          {previewImageUrl && (
+            <img alt="Product preview" src={previewImageUrl} />
+          )}
+          {isUploadingImage && <p>Uploading image...</p>}
+          {uploadError && <p className="errorText">{uploadError}</p>}
+        </div>
+      )}
 
       <label className="adminCheckbox">
         <input

@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Multipart, Path, State},
     http::StatusCode,
     routing::{get, patch, post},
     Json, Router,
@@ -9,8 +9,11 @@ use dotenvy::dotenv;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
-use tower_http::cors::CorsLayer;
+use std::path::PathBuf;
+use tower_http::{cors::CorsLayer, services::ServeDir};
 use uuid::Uuid;
+
+const MAX_UPLOAD_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(Clone)]
 struct AppState {
@@ -63,6 +66,11 @@ struct AdminProductRequest {
 #[derive(Deserialize)]
 struct UpdateProductActiveRequest {
     active: bool,
+}
+
+#[derive(Serialize)]
+struct ProductImageUploadResponse {
+    image_url: String,
 }
 
 #[derive(Deserialize)]
@@ -243,6 +251,22 @@ fn validate_product_payload(payload: &AdminProductRequest) -> Result<(), StatusC
     }
 
     Ok(())
+}
+
+fn extension_for_image_content_type(content_type: &str) -> Option<&'static str> {
+    match content_type.split(';').next()?.trim() {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/webp" => Some("webp"),
+        "image/svg+xml" => Some("svg"),
+        _ => None,
+    }
+}
+
+fn product_upload_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("uploads")
+        .join("products")
 }
 
 async fn get_product_by_slug(
@@ -846,6 +870,65 @@ async fn update_admin_product_active(
     }
 }
 
+async fn upload_admin_product_image(
+    mut multipart: Multipart,
+) -> Result<Json<ProductImageUploadResponse>, StatusCode> {
+    while let Some(field) = multipart.next_field().await.map_err(|err| {
+        eprintln!("Failed to read upload field: {err}");
+        StatusCode::BAD_REQUEST
+    })? {
+        if field.name() != Some("file") {
+            continue;
+        }
+
+        let extension = field
+            .content_type()
+            .and_then(extension_for_image_content_type)
+            .ok_or(StatusCode::BAD_REQUEST)?;
+
+        let mut field = field;
+        let mut bytes = Vec::new();
+
+        while let Some(chunk) = field.chunk().await.map_err(|err| {
+            eprintln!("Failed to read uploaded image bytes: {err}");
+            StatusCode::BAD_REQUEST
+        })? {
+            if bytes.len() + chunk.len() > MAX_UPLOAD_BYTES {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+
+            bytes.extend_from_slice(&chunk);
+        }
+
+        if bytes.is_empty() || bytes.len() > MAX_UPLOAD_BYTES {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+
+        let upload_dir = product_upload_dir();
+
+        tokio::fs::create_dir_all(&upload_dir)
+            .await
+            .map_err(|err| {
+                eprintln!("Failed to create product upload directory: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+        let filename = format!("{}.{}", Uuid::new_v4(), extension);
+        let file_path = upload_dir.join(&filename);
+
+        tokio::fs::write(file_path, bytes).await.map_err(|err| {
+            eprintln!("Failed to save product image upload: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        return Ok(Json(ProductImageUploadResponse {
+            image_url: format!("/uploads/products/{filename}"),
+        }));
+    }
+
+    Err(StatusCode::BAD_REQUEST)
+}
+
 async fn list_admin_orders(
     State(state): State<AppState>,
 ) -> Result<Json<AdminOrdersResponse>, StatusCode> {
@@ -981,6 +1064,11 @@ async fn main() {
             "/admin/products/{id}/active",
             patch(update_admin_product_active),
         )
+        .route(
+            "/admin/uploads/product-image",
+            post(upload_admin_product_image).layer(DefaultBodyLimit::disable()),
+        )
+        .nest_service("/uploads/products", ServeDir::new(product_upload_dir()))
         .with_state(state)
         .layer(CorsLayer::permissive());
 

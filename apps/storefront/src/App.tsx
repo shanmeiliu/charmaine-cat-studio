@@ -1,10 +1,11 @@
 import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { FormEvent, ReactNode } from "react";
+import type { FormEvent, ReactNode, SyntheticEvent } from "react";
 import { useCart } from "./context/CartContext";
 import "./App.css";
 
 const API_BASE_URL = "http://localhost:8080";
+const DEFAULT_PRODUCT_IMAGE_URL = "/images/default-product.png";
 const PRODUCT_CATEGORY_OPTIONS = [
   "Merchandise",
   "Digital Collectible",
@@ -105,16 +106,30 @@ function shortOrderId(id: string) {
   return id.slice(0, 8);
 }
 
-function resolveImageUrl(imageUrl: string | null) {
+function getProductImageUrl(product: Pick<Product, "image_url">) {
+  const imageUrl = product.image_url?.trim();
+
   if (!imageUrl) {
-    return null;
+    return DEFAULT_PRODUCT_IMAGE_URL;
   }
 
-  if (imageUrl.startsWith("/uploads")) {
+  if (imageUrl.startsWith("/uploads/")) {
     return `${API_BASE_URL}${imageUrl}`;
   }
 
-  return imageUrl;
+  if (imageUrl.startsWith("http://") || imageUrl.startsWith("https://")) {
+    return imageUrl;
+  }
+
+  return DEFAULT_PRODUCT_IMAGE_URL;
+}
+
+function fallbackToDefaultProductImage(event: SyntheticEvent<HTMLImageElement>) {
+  if (event.currentTarget.src.endsWith(DEFAULT_PRODUCT_IMAGE_URL)) {
+    return;
+  }
+
+  event.currentTarget.src = DEFAULT_PRODUCT_IMAGE_URL;
 }
 
 function productToFormValues(product: AdminProduct): ProductFormValues {
@@ -273,15 +288,12 @@ function ProductListPage() {
         {products.map((product) => (
           <article className="card" key={product.id}>
             <div className="imagePlaceholder">
-              {resolveImageUrl(product.image_url) ? (
-                <img
-                  alt={product.name}
-                  className="productImage"
-                  src={resolveImageUrl(product.image_url) ?? undefined}
-                />
-              ) : (
-                "🐱"
-              )}
+              <img
+                alt={product.name}
+                className="productImage"
+                onError={fallbackToDefaultProductImage}
+                src={getProductImageUrl(product)}
+              />
             </div>
             <p className="category">{product.category}</p>
             <h2>{product.name}</h2>
@@ -327,15 +339,12 @@ function ProductDetailPage() {
       </Link>
 
       <div className="detailImage">
-        {resolveImageUrl(product.image_url) ? (
-          <img
-            alt={product.name}
-            className="productImage"
-            src={resolveImageUrl(product.image_url) ?? undefined}
-          />
-        ) : (
-          "🐱"
-        )}
+        <img
+          alt={product.name}
+          className="productImage"
+          onError={fallbackToDefaultProductImage}
+          src={getProductImageUrl(product)}
+        />
       </div>
 
       <div>
@@ -1033,7 +1042,7 @@ function ProductForm({
 }) {
   const [isUploadingImage, setIsUploadingImage] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const previewImageUrl = resolveImageUrl(values.image_url);
+  const previewImageUrl = getProductImageUrl({ image_url: values.image_url });
 
   function updateField<Field extends keyof ProductFormValues>(
     field: Field,
@@ -1171,15 +1180,15 @@ function ProductForm({
         />
       </label>
 
-      {(previewImageUrl || isUploadingImage || uploadError) && (
-        <div className="adminImagePreview">
-          {previewImageUrl && (
-            <img alt="Product preview" src={previewImageUrl} />
-          )}
-          {isUploadingImage && <p>Uploading image...</p>}
-          {uploadError && <p className="errorText">{uploadError}</p>}
-        </div>
-      )}
+      <div className="adminImagePreview">
+        <img
+          alt="Product preview"
+          onError={fallbackToDefaultProductImage}
+          src={previewImageUrl}
+        />
+        {isUploadingImage && <p>Uploading image...</p>}
+        {uploadError && <p className="errorText">{uploadError}</p>}
+      </div>
 
       <label className="adminCheckbox">
         <input

@@ -70,6 +70,10 @@ body {
   object-fit: cover;
 }
 
+.detailImage .productImage {
+  min-height: 420px;
+}
+
 .category {
   color: #ea580c;
   font-weight: 700;

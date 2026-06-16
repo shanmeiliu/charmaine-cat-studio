@@ -421,6 +421,7 @@ button:disabled {
 }
 
 .adminProductForm input,
+.adminProductForm select,
 .adminProductForm textarea {
   width: 100%;
   box-sizing: border-box;

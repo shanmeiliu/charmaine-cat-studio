@@ -5,6 +5,17 @@ import { useCart } from "./context/CartContext";
 import "./App.css";
 
 const API_BASE_URL = "http://localhost:8080";
+const PRODUCT_CATEGORY_OPTIONS = [
+  "Merchandise",
+  "Digital Collectible",
+  "Support",
+  "Sticker",
+  "Poster",
+  "Apparel",
+  "Accessory",
+  "Other",
+];
+const CUSTOM_CATEGORY_OPTION = "Other";
 
 type Product = {
   id: string;
@@ -25,7 +36,8 @@ type ProductFormValues = {
   name: string;
   description: string;
   price_cents: string;
-  category: string;
+  categoryOption: string;
+  customCategory: string;
   image_url: string;
   active: boolean;
 };
@@ -94,12 +106,19 @@ function shortOrderId(id: string) {
 }
 
 function productToFormValues(product: AdminProduct): ProductFormValues {
+  const isDefaultCategory =
+    product.category !== CUSTOM_CATEGORY_OPTION &&
+    PRODUCT_CATEGORY_OPTIONS.includes(product.category);
+
   return {
     slug: product.slug,
     name: product.name,
     description: product.description,
     price_cents: String(product.price_cents),
-    category: product.category,
+    categoryOption: isDefaultCategory
+      ? product.category
+      : CUSTOM_CATEGORY_OPTION,
+    customCategory: isDefaultCategory ? "" : product.category,
     image_url: product.image_url ?? "",
     active: product.active,
   };
@@ -111,10 +130,26 @@ function emptyProductFormValues(): ProductFormValues {
     name: "",
     description: "",
     price_cents: "",
-    category: "",
+    categoryOption: "Merchandise",
+    customCategory: "",
     image_url: "",
     active: true,
   };
+}
+
+function categoryFromForm(values: ProductFormValues) {
+  return values.categoryOption === CUSTOM_CATEGORY_OPTION
+    ? values.customCategory.trim()
+    : values.categoryOption.trim();
+}
+
+function isProductFormValid(values: ProductFormValues) {
+  return (
+    values.slug.trim() !== "" &&
+    values.name.trim() !== "" &&
+    Number(values.price_cents) > 0 &&
+    categoryFromForm(values) !== ""
+  );
 }
 
 function productPayloadFromForm(values: ProductFormValues) {
@@ -123,7 +158,7 @@ function productPayloadFromForm(values: ProductFormValues) {
     name: values.name.trim(),
     description: values.description,
     price_cents: Number(values.price_cents),
-    category: values.category.trim(),
+    category: categoryFromForm(values),
     image_url: values.image_url.trim() || null,
     active: values.active,
   };
@@ -727,6 +762,12 @@ function AdminProductsPage() {
     setProductError(null);
     setIsCreatingProduct(true);
 
+    if (!isProductFormValid(createForm)) {
+      setProductError("Could not create product. Check the required fields.");
+      setIsCreatingProduct(false);
+      return;
+    }
+
     try {
       const response = await fetch(`${API_BASE_URL}/admin/products`, {
         method: "POST",
@@ -760,6 +801,12 @@ function AdminProductsPage() {
 
     setProductError(null);
     setSavingProductId(editProductId);
+
+    if (!isProductFormValid(editForm)) {
+      setProductError("Could not update product. Check the required fields.");
+      setSavingProductId(null);
+      return;
+    }
 
     try {
       const response = await fetch(
@@ -985,12 +1032,19 @@ function ProductForm({
 
       <label>
         <span>Category</span>
-        <input
+        <select
           required
-          value={values.category}
-          onChange={(event) => updateField("category", event.target.value)}
-          placeholder="Merchandise"
-        />
+          value={values.categoryOption}
+          onChange={(event) =>
+            updateField("categoryOption", event.target.value)
+          }
+        >
+          {PRODUCT_CATEGORY_OPTIONS.map((category) => (
+            <option key={category} value={category}>
+              {category}
+            </option>
+          ))}
+        </select>
       </label>
 
       <label>
@@ -1004,6 +1058,20 @@ function ProductForm({
           placeholder="2500"
         />
       </label>
+
+      {values.categoryOption === CUSTOM_CATEGORY_OPTION && (
+        <label>
+          <span>Custom category</span>
+          <input
+            required
+            value={values.customCategory}
+            onChange={(event) =>
+              updateField("customCategory", event.target.value)
+            }
+            placeholder="Custom category"
+          />
+        </label>
+      )}
 
       <label className="adminWideField">
         <span>Description</span>

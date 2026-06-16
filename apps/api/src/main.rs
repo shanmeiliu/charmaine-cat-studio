@@ -37,6 +37,34 @@ struct Product {
     category: String,
 }
 
+#[derive(Serialize, FromRow)]
+struct AdminProduct {
+    id: Uuid,
+    slug: String,
+    name: String,
+    description: String,
+    price_cents: i32,
+    image_url: Option<String>,
+    category: String,
+    active: bool,
+}
+
+#[derive(Deserialize)]
+struct AdminProductRequest {
+    slug: String,
+    name: String,
+    description: String,
+    price_cents: i32,
+    category: String,
+    image_url: Option<String>,
+    active: bool,
+}
+
+#[derive(Deserialize)]
+struct UpdateProductActiveRequest {
+    active: bool,
+}
+
 #[derive(Deserialize)]
 struct CreateOrderRequest {
     items: Vec<CreateOrderItem>,
@@ -203,6 +231,18 @@ fn can_update_order_status(current_status: &str, next_status: &str) -> bool {
         "shipped" | "completed" => matches!(current_status, "paid" | "shipped"),
         _ => false,
     }
+}
+
+fn validate_product_payload(payload: &AdminProductRequest) -> Result<(), StatusCode> {
+    if payload.slug.trim().is_empty()
+        || payload.name.trim().is_empty()
+        || payload.category.trim().is_empty()
+        || payload.price_cents <= 0
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    Ok(())
 }
 
 async fn get_product_by_slug(
@@ -639,6 +679,173 @@ async fn list_products(State(state): State<AppState>) -> Result<Json<Vec<Product
     Ok(Json(products))
 }
 
+async fn list_admin_products(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<AdminProduct>>, StatusCode> {
+    let products = sqlx::query_as::<_, AdminProduct>(
+        r#"
+        SELECT
+            id,
+            slug,
+            name,
+            description,
+            price_cents,
+            image_url,
+            category,
+            active
+        FROM products
+        ORDER BY created_at DESC
+        "#,
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|err| {
+        eprintln!("Failed to fetch admin products: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(products))
+}
+
+async fn create_admin_product(
+    State(state): State<AppState>,
+    Json(payload): Json<AdminProductRequest>,
+) -> Result<Json<AdminProduct>, StatusCode> {
+    validate_product_payload(&payload)?;
+
+    let product = sqlx::query_as::<_, AdminProduct>(
+        r#"
+        INSERT INTO products
+        (
+            slug,
+            name,
+            description,
+            price_cents,
+            image_url,
+            category,
+            active
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING
+            id,
+            slug,
+            name,
+            description,
+            price_cents,
+            image_url,
+            category,
+            active
+        "#,
+    )
+    .bind(payload.slug.trim())
+    .bind(payload.name.trim())
+    .bind(payload.description)
+    .bind(payload.price_cents)
+    .bind(payload.image_url.and_then(|url| {
+        let trimmed = url.trim().to_string();
+        (!trimmed.is_empty()).then_some(trimmed)
+    }))
+    .bind(payload.category.trim())
+    .bind(payload.active)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|err| {
+        eprintln!("Failed to create product: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(product))
+}
+
+async fn update_admin_product(
+    State(state): State<AppState>,
+    Path(product_id): Path<Uuid>,
+    Json(payload): Json<AdminProductRequest>,
+) -> Result<Json<AdminProduct>, StatusCode> {
+    validate_product_payload(&payload)?;
+
+    let product = sqlx::query_as::<_, AdminProduct>(
+        r#"
+        UPDATE products
+        SET slug = $1,
+            name = $2,
+            description = $3,
+            price_cents = $4,
+            image_url = $5,
+            category = $6,
+            active = $7
+        WHERE id = $8
+        RETURNING
+            id,
+            slug,
+            name,
+            description,
+            price_cents,
+            image_url,
+            category,
+            active
+        "#,
+    )
+    .bind(payload.slug.trim())
+    .bind(payload.name.trim())
+    .bind(payload.description)
+    .bind(payload.price_cents)
+    .bind(payload.image_url.and_then(|url| {
+        let trimmed = url.trim().to_string();
+        (!trimmed.is_empty()).then_some(trimmed)
+    }))
+    .bind(payload.category.trim())
+    .bind(payload.active)
+    .bind(product_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|err| {
+        eprintln!("Failed to update product: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    match product {
+        Some(product) => Ok(Json(product)),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+async fn update_admin_product_active(
+    State(state): State<AppState>,
+    Path(product_id): Path<Uuid>,
+    Json(payload): Json<UpdateProductActiveRequest>,
+) -> Result<Json<AdminProduct>, StatusCode> {
+    let product = sqlx::query_as::<_, AdminProduct>(
+        r#"
+        UPDATE products
+        SET active = $1
+        WHERE id = $2
+        RETURNING
+            id,
+            slug,
+            name,
+            description,
+            price_cents,
+            image_url,
+            category,
+            active
+        "#,
+    )
+    .bind(payload.active)
+    .bind(product_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|err| {
+        eprintln!("Failed to update product active status: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    match product {
+        Some(product) => Ok(Json(product)),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
 async fn list_admin_orders(
     State(state): State<AppState>,
 ) -> Result<Json<AdminOrdersResponse>, StatusCode> {
@@ -764,6 +971,15 @@ async fn main() {
         .route(
             "/admin/orders/{id}/status",
             patch(update_admin_order_status),
+        )
+        .route(
+            "/admin/products",
+            get(list_admin_products).post(create_admin_product),
+        )
+        .route("/admin/products/{id}", patch(update_admin_product))
+        .route(
+            "/admin/products/{id}/active",
+            patch(update_admin_product_active),
         )
         .with_state(state)
         .layer(CorsLayer::permissive());

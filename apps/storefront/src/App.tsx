@@ -1,5 +1,6 @@
 import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { useCart } from "./context/CartContext";
 import "./App.css";
 
@@ -15,6 +16,20 @@ type Product = {
   category: string;
 };
 
+type AdminProduct = Product & {
+  active: boolean;
+};
+
+type ProductFormValues = {
+  slug: string;
+  name: string;
+  description: string;
+  price_cents: string;
+  category: string;
+  image_url: string;
+  active: boolean;
+};
+
 type OrderDetail = {
   id: string;
   status: string;
@@ -27,6 +42,14 @@ type OrderDetail = {
     quantity: number;
     line_total_cents: number;
   }[];
+};
+
+type AdminOrder = {
+  id: string;
+  status: string;
+  total_cents: number;
+  created_at: string;
+  updated_at: string;
 };
 
 type PayPalButtonsOptions = {
@@ -57,6 +80,53 @@ declare global {
 
 function formatPrice(cents: number) {
   return `$${(cents / 100).toFixed(2)} CAD`;
+}
+
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat("en-CA", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
+function shortOrderId(id: string) {
+  return id.slice(0, 8);
+}
+
+function productToFormValues(product: AdminProduct): ProductFormValues {
+  return {
+    slug: product.slug,
+    name: product.name,
+    description: product.description,
+    price_cents: String(product.price_cents),
+    category: product.category,
+    image_url: product.image_url ?? "",
+    active: product.active,
+  };
+}
+
+function emptyProductFormValues(): ProductFormValues {
+  return {
+    slug: "",
+    name: "",
+    description: "",
+    price_cents: "",
+    category: "",
+    image_url: "",
+    active: true,
+  };
+}
+
+function productPayloadFromForm(values: ProductFormValues) {
+  return {
+    slug: values.slug.trim(),
+    name: values.name.trim(),
+    description: values.description,
+    price_cents: Number(values.price_cents),
+    category: values.category.trim(),
+    image_url: values.image_url.trim() || null,
+    active: values.active,
+  };
 }
 
 function loadPayPalScript(clientId: string) {
@@ -104,9 +174,20 @@ function Layout() {
           🐱 Charmaine Cat Studio
         </Link>
 
-        <Link to="/checkout" className="cartLink">
-          Cart ({totalItems})
-        </Link>
+        <nav className="topNav" aria-label="Primary navigation">
+          <Link to="/" className="navLink">
+            Shop
+          </Link>
+          <Link to="/admin/orders" className="navLink">
+            Admin Orders
+          </Link>
+          <Link to="/admin/products" className="navLink">
+            Admin Products
+          </Link>
+          <Link to="/checkout" className="cartLink">
+            Cart ({totalItems})
+          </Link>
+        </nav>
       </header>
 
       <Routes>
@@ -114,6 +195,8 @@ function Layout() {
         <Route path="/products/:slug" element={<ProductDetailPage />} />
         <Route path="/checkout" element={<CheckoutPage />} />
         <Route path="/orders/:id" element={<OrderConfirmationPage />} />
+        <Route path="/admin/orders" element={<AdminOrdersPage />} />
+        <Route path="/admin/products" element={<AdminProductsPage />} />
       </Routes>
     </>
   );
@@ -469,6 +552,494 @@ function PayPalPayment({
       <div ref={containerRef} className="paypalButtons" />
       {paymentError && <p className="errorText">{paymentError}</p>}
     </div>
+  );
+}
+
+function AdminOrdersPage() {
+  const [orders, setOrders] = useState<AdminOrder[]>([]);
+  const [ordersError, setOrdersError] = useState<string | null>(null);
+  const [updatingOrderId, setUpdatingOrderId] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function loadOrders() {
+      setOrdersError(null);
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/admin/orders`);
+
+        if (!response.ok) {
+          throw new Error("Could not load admin orders");
+        }
+
+        const data: { orders: AdminOrder[] } = await response.json();
+        setOrders(data.orders);
+      } catch (error) {
+        console.error(error);
+        setOrdersError("Could not load orders.");
+      }
+    }
+
+    void loadOrders();
+  }, []);
+
+  async function updateOrderStatus(orderId: string, status: AdminOrder["status"]) {
+    setUpdatingOrderId(orderId);
+    setOrdersError(null);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/admin/orders/${orderId}/status`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ status }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Could not update order status");
+      }
+
+      const updatedOrder: AdminOrder = await response.json();
+      setOrders((currentOrders) =>
+        currentOrders.map((order) =>
+          order.id === updatedOrder.id ? updatedOrder : order,
+        ),
+      );
+    } catch (error) {
+      console.error(error);
+      setOrdersError("Could not update this order.");
+    } finally {
+      setUpdatingOrderId(null);
+    }
+  }
+
+  return (
+    <section className="adminOrders">
+      <div className="adminHeader">
+        <div>
+          <p className="category">Merchant dashboard</p>
+          <h1>Orders</h1>
+        </div>
+      </div>
+
+      {ordersError && <p className="errorText">{ordersError}</p>}
+
+      <div className="adminOrderList">
+        <div className="adminOrderRow adminOrderHead">
+          <span>Order</span>
+          <span>Status</span>
+          <span>Total</span>
+          <span>Created</span>
+          <span>Actions</span>
+        </div>
+
+        {orders.map((order) => {
+          const isUpdating = updatingOrderId === order.id;
+          const canShip = order.status === "paid";
+          const canComplete = order.status === "paid" || order.status === "shipped";
+          const canCancel = order.status !== "completed" && order.status !== "cancelled";
+
+          return (
+            <article className="adminOrderRow" key={order.id}>
+              <strong>#{shortOrderId(order.id)}</strong>
+              <span className={`statusBadge status-${order.status}`}>
+                {order.status}
+              </span>
+              <span>{formatPrice(order.total_cents)}</span>
+              <span>{formatDate(order.created_at)}</span>
+              <div className="adminActions">
+                {canShip && (
+                  <button
+                    disabled={isUpdating}
+                    onClick={() => void updateOrderStatus(order.id, "shipped")}
+                  >
+                    Mark Shipped
+                  </button>
+                )}
+                {canComplete && (
+                  <button
+                    disabled={isUpdating}
+                    onClick={() => void updateOrderStatus(order.id, "completed")}
+                  >
+                    Mark Completed
+                  </button>
+                )}
+                {canCancel && (
+                  <button
+                    className="secondaryButton"
+                    disabled={isUpdating}
+                    onClick={() => void updateOrderStatus(order.id, "cancelled")}
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+
+      {orders.length === 0 && !ordersError && (
+        <div className="emptyCart">
+          <p>No orders yet.</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AdminProductsPage() {
+  const [products, setProducts] = useState<AdminProduct[]>([]);
+  const [productError, setProductError] = useState<string | null>(null);
+  const [createForm, setCreateForm] = useState<ProductFormValues>(
+    emptyProductFormValues,
+  );
+  const [editProductId, setEditProductId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<ProductFormValues>(
+    emptyProductFormValues,
+  );
+  const [savingProductId, setSavingProductId] = useState<string | null>(null);
+  const [isCreatingProduct, setIsCreatingProduct] = useState(false);
+
+  useEffect(() => {
+    async function loadProducts() {
+      setProductError(null);
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/admin/products`);
+
+        if (!response.ok) {
+          throw new Error("Could not load admin products");
+        }
+
+        setProducts(await response.json());
+      } catch (error) {
+        console.error(error);
+        setProductError("Could not load products.");
+      }
+    }
+
+    void loadProducts();
+  }, []);
+
+  async function createProduct(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setProductError(null);
+    setIsCreatingProduct(true);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/admin/products`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(productPayloadFromForm(createForm)),
+      });
+
+      if (!response.ok) {
+        throw new Error("Could not create product");
+      }
+
+      const product: AdminProduct = await response.json();
+      setProducts((currentProducts) => [product, ...currentProducts]);
+      setCreateForm(emptyProductFormValues());
+    } catch (error) {
+      console.error(error);
+      setProductError("Could not create product. Check the required fields.");
+    } finally {
+      setIsCreatingProduct(false);
+    }
+  }
+
+  async function updateProduct(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!editProductId) {
+      return;
+    }
+
+    setProductError(null);
+    setSavingProductId(editProductId);
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/admin/products/${editProductId}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(productPayloadFromForm(editForm)),
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error("Could not update product");
+      }
+
+      const updatedProduct: AdminProduct = await response.json();
+      setProducts((currentProducts) =>
+        currentProducts.map((product) =>
+          product.id === updatedProduct.id ? updatedProduct : product,
+        ),
+      );
+      setEditProductId(null);
+      setEditForm(emptyProductFormValues());
+    } catch (error) {
+      console.error(error);
+      setProductError("Could not update product. Check the required fields.");
+    } finally {
+      setSavingProductId(null);
+    }
+  }
+
+  async function toggleProductActive(product: AdminProduct) {
+    setProductError(null);
+    setSavingProductId(product.id);
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/admin/products/${product.id}/active`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ active: !product.active }),
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error("Could not update product active status");
+      }
+
+      const updatedProduct: AdminProduct = await response.json();
+      setProducts((currentProducts) =>
+        currentProducts.map((currentProduct) =>
+          currentProduct.id === updatedProduct.id
+            ? updatedProduct
+            : currentProduct,
+        ),
+      );
+    } catch (error) {
+      console.error(error);
+      setProductError("Could not update product active status.");
+    } finally {
+      setSavingProductId(null);
+    }
+  }
+
+  function startEditing(product: AdminProduct) {
+    setEditProductId(product.id);
+    setEditForm(productToFormValues(product));
+  }
+
+  return (
+    <section className="adminProducts">
+      <div className="adminHeader">
+        <div>
+          <p className="category">Merchant dashboard</p>
+          <h1>Products</h1>
+        </div>
+      </div>
+
+      {productError && <p className="errorText">{productError}</p>}
+
+      <ProductForm
+        title="Create product"
+        values={createForm}
+        onChange={setCreateForm}
+        onSubmit={createProduct}
+        submitLabel={isCreatingProduct ? "Creating..." : "Create Product"}
+        disabled={isCreatingProduct}
+      />
+
+      <div className="adminProductList">
+        <div className="adminProductRow adminProductHead">
+          <span>Product</span>
+          <span>Slug</span>
+          <span>Category</span>
+          <span>Price</span>
+          <span>Status</span>
+          <span>Actions</span>
+        </div>
+
+        {products.map((product) => {
+          const isSaving = savingProductId === product.id;
+          const isEditing = editProductId === product.id;
+
+          return (
+            <article className="adminProductRow" key={product.id}>
+              {isEditing ? (
+                <div className="adminProductEdit">
+                  <ProductForm
+                    title={`Edit ${product.name}`}
+                    values={editForm}
+                    onChange={setEditForm}
+                    onSubmit={updateProduct}
+                    submitLabel={isSaving ? "Saving..." : "Save Product"}
+                    disabled={isSaving}
+                    secondaryAction={
+                      <button
+                        className="secondaryButton"
+                        type="button"
+                        disabled={isSaving}
+                        onClick={() => setEditProductId(null)}
+                      >
+                        Cancel Edit
+                      </button>
+                    }
+                  />
+                </div>
+              ) : (
+                <>
+                  <strong>{product.name}</strong>
+                  <span>{product.slug}</span>
+                  <span>{product.category}</span>
+                  <span>{formatPrice(product.price_cents)}</span>
+                  <span
+                    className={`statusBadge ${
+                      product.active ? "status-paid" : "status-cancelled"
+                    }`}
+                  >
+                    {product.active ? "active" : "inactive"}
+                  </span>
+                  <div className="adminActions">
+                    <button
+                      disabled={isSaving}
+                      onClick={() => startEditing(product)}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      className="secondaryButton"
+                      disabled={isSaving}
+                      onClick={() => void toggleProductActive(product)}
+                    >
+                      {product.active ? "Deactivate" : "Activate"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </article>
+          );
+        })}
+      </div>
+
+      {products.length === 0 && !productError && (
+        <div className="emptyCart">
+          <p>No products yet.</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ProductForm({
+  title,
+  values,
+  onChange,
+  onSubmit,
+  submitLabel,
+  disabled,
+  secondaryAction,
+}: {
+  title: string;
+  values: ProductFormValues;
+  onChange: (values: ProductFormValues) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  submitLabel: string;
+  disabled: boolean;
+  secondaryAction?: ReactNode;
+}) {
+  function updateField<Field extends keyof ProductFormValues>(
+    field: Field,
+    value: ProductFormValues[Field],
+  ) {
+    onChange({ ...values, [field]: value });
+  }
+
+  return (
+    <form className="adminProductForm" onSubmit={onSubmit}>
+      <h2>{title}</h2>
+
+      <label>
+        <span>Slug</span>
+        <input
+          required
+          value={values.slug}
+          onChange={(event) => updateField("slug", event.target.value)}
+          placeholder="coding-cat-shirt"
+        />
+      </label>
+
+      <label>
+        <span>Name</span>
+        <input
+          required
+          value={values.name}
+          onChange={(event) => updateField("name", event.target.value)}
+          placeholder="Coding Cat Shirt"
+        />
+      </label>
+
+      <label>
+        <span>Category</span>
+        <input
+          required
+          value={values.category}
+          onChange={(event) => updateField("category", event.target.value)}
+          placeholder="Merchandise"
+        />
+      </label>
+
+      <label>
+        <span>Price cents</span>
+        <input
+          required
+          min="1"
+          type="number"
+          value={values.price_cents}
+          onChange={(event) => updateField("price_cents", event.target.value)}
+          placeholder="2500"
+        />
+      </label>
+
+      <label className="adminWideField">
+        <span>Description</span>
+        <textarea
+          value={values.description}
+          onChange={(event) => updateField("description", event.target.value)}
+          rows={3}
+          placeholder="Short product description"
+        />
+      </label>
+
+      <label className="adminWideField">
+        <span>Image URL</span>
+        <input
+          value={values.image_url}
+          onChange={(event) => updateField("image_url", event.target.value)}
+          placeholder="https://example.com/product.png"
+        />
+      </label>
+
+      <label className="adminCheckbox">
+        <input
+          checked={values.active}
+          type="checkbox"
+          onChange={(event) => updateField("active", event.target.checked)}
+        />
+        <span>Active</span>
+      </label>
+
+      <div className="adminFormActions">
+        <button disabled={disabled} type="submit">
+          {submitLabel}
+        </button>
+        {secondaryAction}
+      </div>
+    </form>
   );
 }
 

@@ -29,6 +29,14 @@ type OrderDetail = {
   }[];
 };
 
+type AdminOrder = {
+  id: string;
+  status: string;
+  total_cents: number;
+  created_at: string;
+  updated_at: string;
+};
+
 type PayPalButtonsOptions = {
   createOrder: () => Promise<string>;
   onApprove: (data: { orderID: string }) => Promise<void>;
@@ -57,6 +65,17 @@ declare global {
 
 function formatPrice(cents: number) {
   return `$${(cents / 100).toFixed(2)} CAD`;
+}
+
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat("en-CA", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
+function shortOrderId(id: string) {
+  return id.slice(0, 8);
 }
 
 function loadPayPalScript(clientId: string) {
@@ -104,9 +123,14 @@ function Layout() {
           🐱 Charmaine Cat Studio
         </Link>
 
-        <Link to="/checkout" className="cartLink">
-          Cart ({totalItems})
-        </Link>
+        <nav className="topNav" aria-label="Primary navigation">
+          <Link to="/admin/orders" className="navLink">
+            Admin
+          </Link>
+          <Link to="/checkout" className="cartLink">
+            Cart ({totalItems})
+          </Link>
+        </nav>
       </header>
 
       <Routes>
@@ -114,6 +138,7 @@ function Layout() {
         <Route path="/products/:slug" element={<ProductDetailPage />} />
         <Route path="/checkout" element={<CheckoutPage />} />
         <Route path="/orders/:id" element={<OrderConfirmationPage />} />
+        <Route path="/admin/orders" element={<AdminOrdersPage />} />
       </Routes>
     </>
   );
@@ -469,6 +494,139 @@ function PayPalPayment({
       <div ref={containerRef} className="paypalButtons" />
       {paymentError && <p className="errorText">{paymentError}</p>}
     </div>
+  );
+}
+
+function AdminOrdersPage() {
+  const [orders, setOrders] = useState<AdminOrder[]>([]);
+  const [ordersError, setOrdersError] = useState<string | null>(null);
+  const [updatingOrderId, setUpdatingOrderId] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function loadOrders() {
+      setOrdersError(null);
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/admin/orders`);
+
+        if (!response.ok) {
+          throw new Error("Could not load admin orders");
+        }
+
+        const data: { orders: AdminOrder[] } = await response.json();
+        setOrders(data.orders);
+      } catch (error) {
+        console.error(error);
+        setOrdersError("Could not load orders.");
+      }
+    }
+
+    void loadOrders();
+  }, []);
+
+  async function updateOrderStatus(orderId: string, status: AdminOrder["status"]) {
+    setUpdatingOrderId(orderId);
+    setOrdersError(null);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/admin/orders/${orderId}/status`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ status }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Could not update order status");
+      }
+
+      const updatedOrder: AdminOrder = await response.json();
+      setOrders((currentOrders) =>
+        currentOrders.map((order) =>
+          order.id === updatedOrder.id ? updatedOrder : order,
+        ),
+      );
+    } catch (error) {
+      console.error(error);
+      setOrdersError("Could not update this order.");
+    } finally {
+      setUpdatingOrderId(null);
+    }
+  }
+
+  return (
+    <section className="adminOrders">
+      <div className="adminHeader">
+        <div>
+          <p className="category">Merchant dashboard</p>
+          <h1>Orders</h1>
+        </div>
+      </div>
+
+      {ordersError && <p className="errorText">{ordersError}</p>}
+
+      <div className="adminOrderList">
+        <div className="adminOrderRow adminOrderHead">
+          <span>Order</span>
+          <span>Status</span>
+          <span>Total</span>
+          <span>Created</span>
+          <span>Actions</span>
+        </div>
+
+        {orders.map((order) => {
+          const isUpdating = updatingOrderId === order.id;
+          const canShip = order.status === "paid";
+          const canComplete = order.status === "paid" || order.status === "shipped";
+          const canCancel = order.status !== "completed" && order.status !== "cancelled";
+
+          return (
+            <article className="adminOrderRow" key={order.id}>
+              <strong>#{shortOrderId(order.id)}</strong>
+              <span className={`statusBadge status-${order.status}`}>
+                {order.status}
+              </span>
+              <span>{formatPrice(order.total_cents)}</span>
+              <span>{formatDate(order.created_at)}</span>
+              <div className="adminActions">
+                {canShip && (
+                  <button
+                    disabled={isUpdating}
+                    onClick={() => void updateOrderStatus(order.id, "shipped")}
+                  >
+                    Mark Shipped
+                  </button>
+                )}
+                {canComplete && (
+                  <button
+                    disabled={isUpdating}
+                    onClick={() => void updateOrderStatus(order.id, "completed")}
+                  >
+                    Mark Completed
+                  </button>
+                )}
+                {canCancel && (
+                  <button
+                    className="secondaryButton"
+                    disabled={isUpdating}
+                    onClick={() => void updateOrderStatus(order.id, "cancelled")}
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+
+      {orders.length === 0 && !ordersError && (
+        <div className="emptyCart">
+          <p>No orders yet.</p>
+        </div>
+      )}
+    </section>
   );
 }
 

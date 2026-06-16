@@ -1,9 +1,10 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
+use chrono::{DateTime, Utc};
 use dotenvy::dotenv;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -95,6 +96,25 @@ struct CapturePayPalOrderResponse {
     order: OrderDetailResponse,
 }
 
+#[derive(Serialize, FromRow)]
+struct AdminOrderSummary {
+    id: Uuid,
+    status: String,
+    total_cents: i32,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct AdminOrdersResponse {
+    orders: Vec<AdminOrderSummary>,
+}
+
+#[derive(Deserialize)]
+struct UpdateOrderStatusRequest {
+    status: String,
+}
+
 #[derive(Deserialize)]
 struct PayPalAccessTokenResponse {
     access_token: String,
@@ -167,6 +187,22 @@ async fn get_paypal_access_token(state: &AppState) -> Result<String, StatusCode>
 
 fn paypal_amount(total_cents: i32) -> String {
     format!("{}.{:02}", total_cents / 100, total_cents % 100)
+}
+
+fn is_admin_order_status(status: &str) -> bool {
+    matches!(status, "shipped" | "completed" | "cancelled")
+}
+
+fn can_update_order_status(current_status: &str, next_status: &str) -> bool {
+    if current_status == "cancelled" {
+        return false;
+    }
+
+    match next_status {
+        "cancelled" => true,
+        "shipped" | "completed" => matches!(current_status, "paid" | "shipped"),
+        _ => false,
+    }
 }
 
 async fn get_product_by_slug(
@@ -547,15 +583,16 @@ async fn capture_paypal_order(
         return Err(StatusCode::BAD_GATEWAY);
     }
 
-    let update_result = sqlx::query!(
+    let update_result = sqlx::query(
         r#"
         UPDATE orders
-        SET status = 'paid'
+        SET status = 'paid',
+            updated_at = NOW()
         WHERE id = $1
           AND status = 'pending'
         "#,
-        payload.order_id
     )
+    .bind(payload.order_id)
     .execute(&state.db)
     .await
     .map_err(|err| {
@@ -602,6 +639,92 @@ async fn list_products(State(state): State<AppState>) -> Result<Json<Vec<Product
     Ok(Json(products))
 }
 
+async fn list_admin_orders(
+    State(state): State<AppState>,
+) -> Result<Json<AdminOrdersResponse>, StatusCode> {
+    let orders = sqlx::query_as::<_, AdminOrderSummary>(
+        r#"
+        SELECT
+            id,
+            status,
+            total_cents,
+            created_at,
+            updated_at
+        FROM orders
+        ORDER BY created_at DESC
+        LIMIT 50
+        "#,
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|err| {
+        eprintln!("Failed to fetch admin orders: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(AdminOrdersResponse { orders }))
+}
+
+async fn update_admin_order_status(
+    State(state): State<AppState>,
+    Path(order_id): Path<Uuid>,
+    Json(payload): Json<UpdateOrderStatusRequest>,
+) -> Result<Json<AdminOrderSummary>, StatusCode> {
+    if !is_admin_order_status(&payload.status) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let order = sqlx::query!(
+        r#"
+        SELECT status
+        FROM orders
+        WHERE id = $1
+        "#,
+        order_id
+    )
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|err| {
+        eprintln!("Failed to fetch order for admin status update: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?
+    .ok_or(StatusCode::NOT_FOUND)?;
+
+    if !can_update_order_status(&order.status, &payload.status) {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    let updated_order = sqlx::query_as::<_, AdminOrderSummary>(
+        r#"
+        UPDATE orders
+        SET status = $1,
+            updated_at = NOW()
+        WHERE id = $2
+          AND status = $3
+        RETURNING
+            id,
+            status,
+            total_cents,
+            created_at,
+            updated_at
+        "#,
+    )
+    .bind(payload.status)
+    .bind(order_id)
+    .bind(order.status)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|err| {
+        eprintln!("Failed to update order status: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    match updated_order {
+        Some(order) => Ok(Json(order)),
+        None => Err(StatusCode::CONFLICT),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     dotenv().ok();
@@ -637,6 +760,11 @@ async fn main() {
         .route("/orders/{id}", get(get_order_by_id))
         .route("/payments/paypal/create-order", post(create_paypal_order))
         .route("/payments/paypal/capture-order", post(capture_paypal_order))
+        .route("/admin/orders", get(list_admin_orders))
+        .route(
+            "/admin/orders/{id}/status",
+            patch(update_admin_order_status),
+        )
         .with_state(state)
         .layer(CorsLayer::permissive());
 

@@ -10,6 +10,7 @@ tower-http = { version = "0.6", features = ["cors"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1.23.3", features = ["serde", "v4"] }
+chrono = { version = "0.4", features = ["serde"] }
 dotenvy = "0.15.7"
 sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono"] }
 base64 = "0.22.1"

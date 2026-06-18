@@ -10,6 +10,9 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::RwLock;
 use tower_http::{cors::CorsLayer, services::ServeDir};
 use uuid::Uuid;
 
@@ -20,6 +23,12 @@ struct AppState {
     db: PgPool,
     paypal: PayPalConfig,
     http_client: Client,
+    product_cache: Arc<RwLock<ProductCache>>,
+}
+
+struct ProductCache {
+    products: Option<Vec<Product>>,
+    updated_at: Instant,
 }
 
 #[derive(Clone)]
@@ -29,7 +38,7 @@ struct PayPalConfig {
     base_url: String,
 }
 
-#[derive(Serialize, FromRow)]
+#[derive(Clone, Serialize, FromRow)]
 struct Product {
     id: Uuid,
     slug: String,
@@ -251,6 +260,13 @@ fn validate_product_payload(payload: &AdminProductRequest) -> Result<(), StatusC
     }
 
     Ok(())
+}
+
+async fn invalidate_product_cache(cache: &Arc<RwLock<ProductCache>>) {
+    let mut cache = cache.write().await;
+    cache.products = None;
+    cache.updated_at = Instant::now();
+    println!("[cache] products invalidated");
 }
 
 fn extension_for_image_content_type(content_type: &str) -> Option<&'static str> {
@@ -678,6 +694,16 @@ async fn capture_paypal_order(
 }
 
 async fn list_products(State(state): State<AppState>) -> Result<Json<Vec<Product>>, StatusCode> {
+    {
+        let cache = state.product_cache.read().await;
+        if let Some(products) = &cache.products {
+            println!("[cache] products hit");
+            return Ok(Json(products.clone()));
+        }
+    }
+
+    println!("[cache] products miss");
+
     let products = sqlx::query_as::<_, Product>(
         r#"
         SELECT
@@ -699,6 +725,12 @@ async fn list_products(State(state): State<AppState>) -> Result<Json<Vec<Product
         eprintln!("Failed to fetch products: {err}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+
+    {
+        let mut cache = state.product_cache.write().await;
+        cache.products = Some(products.clone());
+        cache.updated_at = Instant::now();
+    }
 
     Ok(Json(products))
 }
@@ -778,6 +810,8 @@ async fn create_admin_product(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    invalidate_product_cache(&state.product_cache).await;
+
     Ok(Json(product))
 }
 
@@ -829,7 +863,10 @@ async fn update_admin_product(
     })?;
 
     match product {
-        Some(product) => Ok(Json(product)),
+        Some(product) => {
+            invalidate_product_cache(&state.product_cache).await;
+            Ok(Json(product))
+        }
         None => Err(StatusCode::NOT_FOUND),
     }
 }
@@ -865,9 +902,39 @@ async fn update_admin_product_active(
     })?;
 
     match product {
-        Some(product) => Ok(Json(product)),
+        Some(product) => {
+            invalidate_product_cache(&state.product_cache).await;
+            Ok(Json(product))
+        }
         None => Err(StatusCode::NOT_FOUND),
     }
+}
+
+async fn delete_admin_product(
+    State(state): State<AppState>,
+    Path(product_id): Path<Uuid>,
+) -> Result<StatusCode, StatusCode> {
+    let result = sqlx::query(
+        r#"
+        DELETE FROM products
+        WHERE id = $1
+        "#,
+    )
+    .bind(product_id)
+    .execute(&state.db)
+    .await
+    .map_err(|err| {
+        eprintln!("Failed to delete product: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if result.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    invalidate_product_cache(&state.product_cache).await;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn upload_admin_product_image(
@@ -1040,6 +1107,10 @@ async fn main() {
         db,
         paypal,
         http_client: Client::new(),
+        product_cache: Arc::new(RwLock::new(ProductCache {
+            products: None,
+            updated_at: Instant::now(),
+        })),
     };
 
     let app = Router::new()
@@ -1059,7 +1130,10 @@ async fn main() {
             "/admin/products",
             get(list_admin_products).post(create_admin_product),
         )
-        .route("/admin/products/{id}", patch(update_admin_product))
+        .route(
+            "/admin/products/{id}",
+            patch(update_admin_product).delete(delete_admin_product),
+        )
         .route(
             "/admin/products/{id}/active",
             patch(update_admin_product_active),

@@ -1,10 +1,11 @@
 import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { FormEvent, ReactNode } from "react";
+import type { FormEvent, ReactNode, SyntheticEvent } from "react";
 import { useCart } from "./context/CartContext";
 import "./App.css";
 
 const API_BASE_URL = "http://localhost:8080";
+const DEFAULT_PRODUCT_IMAGE_URL = "/images/default-product.png";
 const PRODUCT_CATEGORY_OPTIONS = [
   "Merchandise",
   "Digital Collectible",
@@ -103,6 +104,32 @@ function formatDate(value: string) {
 
 function shortOrderId(id: string) {
   return id.slice(0, 8);
+}
+
+function getProductImageUrl(product: Pick<Product, "image_url">) {
+  const imageUrl = product.image_url?.trim();
+
+  if (!imageUrl) {
+    return DEFAULT_PRODUCT_IMAGE_URL;
+  }
+
+  if (imageUrl.startsWith("/uploads/")) {
+    return `${API_BASE_URL}${imageUrl}`;
+  }
+
+  if (imageUrl.startsWith("http://") || imageUrl.startsWith("https://")) {
+    return imageUrl;
+  }
+
+  return DEFAULT_PRODUCT_IMAGE_URL;
+}
+
+function fallbackToDefaultProductImage(event: SyntheticEvent<HTMLImageElement>) {
+  if (event.currentTarget.src.endsWith(DEFAULT_PRODUCT_IMAGE_URL)) {
+    return;
+  }
+
+  event.currentTarget.src = DEFAULT_PRODUCT_IMAGE_URL;
 }
 
 function productToFormValues(product: AdminProduct): ProductFormValues {
@@ -260,7 +287,14 @@ function ProductListPage() {
       <section className="grid">
         {products.map((product) => (
           <article className="card" key={product.id}>
-            <div className="imagePlaceholder">🐱</div>
+            <div className="imagePlaceholder">
+              <img
+                alt={product.name}
+                className="productImage"
+                onError={fallbackToDefaultProductImage}
+                src={getProductImageUrl(product)}
+              />
+            </div>
             <p className="category">{product.category}</p>
             <h2>{product.name}</h2>
             <p>{product.description}</p>
@@ -304,7 +338,14 @@ function ProductDetailPage() {
         ← Back to studio
       </Link>
 
-      <div className="detailImage">🐱</div>
+      <div className="detailImage">
+        <img
+          alt={product.name}
+          className="productImage"
+          onError={fallbackToDefaultProductImage}
+          src={getProductImageUrl(product)}
+        />
+      </div>
 
       <div>
         <p className="category">{product.category}</p>
@@ -999,11 +1040,42 @@ function ProductForm({
   disabled: boolean;
   secondaryAction?: ReactNode;
 }) {
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const previewImageUrl = getProductImageUrl({ image_url: values.image_url });
+
   function updateField<Field extends keyof ProductFormValues>(
     field: Field,
     value: ProductFormValues[Field],
   ) {
     onChange({ ...values, [field]: value });
+  }
+
+  async function uploadImage(file: File) {
+    setIsUploadingImage(true);
+    setUploadError(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch(`${API_BASE_URL}/admin/uploads/product-image`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error("Upload failed");
+      }
+
+      const data: { image_url: string } = await response.json();
+      updateField("image_url", data.image_url);
+    } catch (error) {
+      console.error(error);
+      setUploadError("Could not upload image. Use PNG, JPEG, WebP, or SVG under 5MB.");
+    } finally {
+      setIsUploadingImage(false);
+    }
   }
 
   return (
@@ -1091,6 +1163,32 @@ function ProductForm({
           placeholder="https://example.com/product.png"
         />
       </label>
+
+      <label className="adminWideField">
+        <span>Upload image</span>
+        <input
+          accept="image/png,image/jpeg,image/webp,image/svg+xml"
+          disabled={isUploadingImage}
+          type="file"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+
+            if (file) {
+              void uploadImage(file);
+            }
+          }}
+        />
+      </label>
+
+      <div className="adminImagePreview">
+        <img
+          alt="Product preview"
+          onError={fallbackToDefaultProductImage}
+          src={previewImageUrl}
+        />
+        {isUploadingImage && <p>Uploading image...</p>}
+        {uploadError && <p className="errorText">{uploadError}</p>}
+      </div>
 
       <label className="adminCheckbox">
         <input

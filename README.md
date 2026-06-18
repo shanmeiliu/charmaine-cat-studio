@@ -266,6 +266,41 @@ charmaine-cat-studio/
 
 ---
 
+## Performance Testing
+
+Use Catbench to benchmark the public product list endpoint before and after the
+in-memory product cache.
+
+Before cache:
+
+```bash
+./catbench run \
+  --url http://localhost:8080/products \
+  --duration 30s \
+  --concurrency 50 \
+  --save results/products-before-cache.json
+```
+
+After cache:
+
+```bash
+./catbench run \
+  --url http://localhost:8080/products \
+  --duration 30s \
+  --concurrency 50 \
+  --save results/products-after-cache.json
+```
+
+Compare:
+
+```bash
+./catbench compare \
+  results/products-before-cache.json \
+  results/products-after-cache.json
+```
+
+---
+
 ## 🎯 Portfolio Highlights
 
 This project demonstrates:

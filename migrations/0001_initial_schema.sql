@@ -1,0 +1,2 @@
+-- Initial schema was created manually before the migration runner existed.
+-- This placeholder records the starting point for future reproducible migrations.

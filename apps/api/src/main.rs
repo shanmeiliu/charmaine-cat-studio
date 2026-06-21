@@ -1159,11 +1159,16 @@ async fn main() {
 
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
+    let db_max_connections: u32 = std::env::var("DB_MAX_CONNECTIONS")
+    .unwrap_or_else(|_| "5".to_string())
+    .parse()
+    .expect("DB_MAX_CONNECTIONS must be a positive integer");
+
     let db = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
-        .expect("failed to connect to database");
+    .max_connections(db_max_connections)
+    .connect(&database_url)
+    .await
+    .expect("failed to connect to database");
 
     if std::env::args().nth(1).as_deref() == Some("migrate") {
         if let Err(err) = run_migrations(&db).await {

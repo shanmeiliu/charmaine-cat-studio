@@ -1082,11 +1082,98 @@ async fn update_admin_order_status(
     }
 }
 
+fn migrations_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("migrations")
+}
+
+async fn run_migrations(db: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version TEXT PRIMARY KEY,
+            applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+
+    let mut entries = tokio::fs::read_dir(migrations_dir()).await?;
+    let mut files = Vec::new();
+
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+
+        if path.extension().and_then(|ext| ext.to_str()) == Some("sql") {
+            files.push(path);
+        }
+    }
+
+    files.sort();
+
+    for path in files {
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("invalid migration filename")?
+            .to_string();
+
+        let already_applied = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = $1",
+        )
+        .bind(&filename)
+        .fetch_one(db)
+        .await?;
+
+        if already_applied > 0 {
+            println!("[migrate] skipped {filename}");
+            continue;
+        }
+
+        let sql = tokio::fs::read_to_string(&path).await?;
+        let mut tx = db.begin().await?;
+
+        sqlx::raw_sql(&sql).execute(&mut *tx).await?;
+
+        sqlx::query("INSERT INTO schema_migrations (version) VALUES ($1)")
+            .bind(&filename)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+
+        println!("[migrate] applied {filename}");
+    }
+
+    println!("[migrate] done");
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     dotenv().ok();
 
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+
+    let db = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&database_url)
+        .await
+        .expect("failed to connect to database");
+
+    if std::env::args().nth(1).as_deref() == Some("migrate") {
+        if let Err(err) = run_migrations(&db).await {
+            eprintln!("[migrate] failed: {err}");
+            std::process::exit(1);
+        }
+
+        return;
+    }
+
     let paypal = PayPalConfig {
         client_id: std::env::var("PAYPAL_CLIENT_ID").expect("PAYPAL_CLIENT_ID must be set"),
         client_secret: std::env::var("PAYPAL_CLIENT_SECRET")
@@ -1096,12 +1183,6 @@ async fn main() {
             .trim_end_matches('/')
             .to_string(),
     };
-
-    let db = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
-        .expect("failed to connect to database");
 
     let state = AppState {
         db,

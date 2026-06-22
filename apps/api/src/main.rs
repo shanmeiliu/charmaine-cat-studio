@@ -111,6 +111,14 @@ struct CreateOrderItem {
     quantity: i32,
 }
 
+struct OrderProductLine {
+    product_id: Uuid,
+    product_name: String,
+    unit_price_cents: i32,
+    quantity: i32,
+    line_total_cents: i32,
+}
+
 #[derive(Serialize)]
 struct CreateOrderResponse {
     order_id: Uuid,
@@ -331,7 +339,7 @@ async fn create_order(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let mut total_cents = 0;
+    let mut lines = Vec::with_capacity(payload.items.len());
 
     for item in &payload.items {
         if item.quantity <= 0 {
@@ -355,9 +363,18 @@ async fn create_order(
         })?;
 
         let product = product.ok_or(StatusCode::BAD_REQUEST)?;
+        let line_total_cents = product.price_cents * item.quantity;
 
-        total_cents += product.price_cents * item.quantity;
+        lines.push(OrderProductLine {
+            product_id: product.id,
+            product_name: product.name,
+            unit_price_cents: product.price_cents,
+            quantity: item.quantity,
+            line_total_cents,
+        });
     }
+
+    let total_cents = lines.iter().map(|line| line.line_total_cents).sum::<i32>();
 
     let order = sqlx::query!(
         r#"
@@ -374,25 +391,7 @@ async fn create_order(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    for item in &payload.items {
-        let product = sqlx::query!(
-            r#"
-            SELECT id, name, price_cents
-            FROM products
-            WHERE id = $1
-              AND active = true
-            "#,
-            item.product_id
-        )
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|err| {
-            eprintln!("Failed to fetch product for order item: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-        let line_total_cents = product.price_cents * item.quantity;
-
+    for line in lines {
         sqlx::query!(
             r#"
             INSERT INTO order_items
@@ -407,11 +406,11 @@ async fn create_order(
             VALUES ($1, $2, $3, $4, $5, $6)
             "#,
             order.id,
-            product.id,
-            product.name,
-            product.price_cents,
-            item.quantity,
-            line_total_cents
+            line.product_id,
+            line.product_name,
+            line.unit_price_cents,
+            line.quantity,
+            line.line_total_cents
         )
         .execute(&mut *tx)
         .await
@@ -1160,15 +1159,15 @@ async fn main() {
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
     let db_max_connections: u32 = std::env::var("DB_MAX_CONNECTIONS")
-    .unwrap_or_else(|_| "5".to_string())
-    .parse()
-    .expect("DB_MAX_CONNECTIONS must be a positive integer");
+        .unwrap_or_else(|_| "5".to_string())
+        .parse()
+        .expect("DB_MAX_CONNECTIONS must be a positive integer");
 
     let db = PgPoolOptions::new()
-    .max_connections(db_max_connections)
-    .connect(&database_url)
-    .await
-    .expect("failed to connect to database");
+        .max_connections(db_max_connections)
+        .connect(&database_url)
+        .await
+        .expect("failed to connect to database");
 
     if std::env::args().nth(1).as_deref() == Some("migrate") {
         if let Err(err) = run_migrations(&db).await {

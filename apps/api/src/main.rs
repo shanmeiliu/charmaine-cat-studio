@@ -1,6 +1,7 @@
 use axum::{
     extract::{DefaultBodyLimit, Multipart, Path, State},
     http::StatusCode,
+    middleware::from_fn_with_state,
     routing::{get, patch, post},
     Json, Router,
 };
@@ -16,6 +17,10 @@ use tokio::sync::RwLock;
 use tower_http::{cors::CorsLayer, services::ServeDir};
 use uuid::Uuid;
 
+mod metrics;
+
+use metrics::MetricsRegistry;
+
 const MAX_UPLOAD_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(Clone)]
@@ -24,6 +29,7 @@ struct AppState {
     paypal: PayPalConfig,
     http_client: Client,
     product_cache: Arc<RwLock<ProductCache>>,
+    metrics: Arc<MetricsRegistry>,
 }
 
 struct ProductCache {
@@ -205,6 +211,10 @@ struct PayPalAmount {
 
 async fn health() -> &'static str {
     "Charmaine Cat Studio API is running 🐱"
+}
+
+async fn get_metrics(State(state): State<AppState>) -> Json<metrics::MetricsSnapshot> {
+    Json(state.metrics.snapshot())
 }
 
 async fn get_paypal_access_token(state: &AppState) -> Result<String, StatusCode> {
@@ -697,11 +707,13 @@ async fn list_products(State(state): State<AppState>) -> Result<Json<Vec<Product
         let cache = state.product_cache.read().await;
         if let Some(products) = &cache.products {
             println!("[cache] products hit");
+            state.metrics.record_cache_hit();
             return Ok(Json(products.clone()));
         }
     }
 
     println!("[cache] products miss");
+    state.metrics.record_cache_miss();
 
     let products = sqlx::query_as::<_, Product>(
         r#"
@@ -1196,10 +1208,14 @@ async fn main() {
             products: None,
             updated_at: Instant::now(),
         })),
+        metrics: Arc::new(MetricsRegistry::new()),
     };
+
+    let metrics = state.metrics.clone();
 
     let app = Router::new()
         .route("/health", get(health))
+        .route("/metrics", get(get_metrics))
         .route("/products", get(list_products))
         .route("/products/{slug}", get(get_product_by_slug))
         .route("/orders", post(create_order))
@@ -1229,6 +1245,10 @@ async fn main() {
         )
         .nest_service("/uploads/products", ServeDir::new(product_upload_dir()))
         .with_state(state)
+        .layer(from_fn_with_state(
+            metrics,
+            metrics::middleware::record_metrics,
+        ))
         .layer(CorsLayer::permissive());
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")

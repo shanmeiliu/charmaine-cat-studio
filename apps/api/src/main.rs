@@ -1,7 +1,7 @@
 use axum::{
-    extract::{DefaultBodyLimit, Multipart, Path, State},
+    extract::{DefaultBodyLimit, Extension, Multipart, Path, State},
     http::StatusCode,
-    middleware::from_fn_with_state,
+    middleware::{from_fn, from_fn_with_state},
     routing::{get, patch, post},
     Json, Router,
 };
@@ -18,8 +18,10 @@ use tower_http::{cors::CorsLayer, services::ServeDir};
 use uuid::Uuid;
 
 mod metrics;
+mod tracing;
 
 use metrics::MetricsRegistry;
+use tracing::Trace;
 
 const MAX_UPLOAD_BYTES: usize = 5 * 1024 * 1024;
 
@@ -338,6 +340,7 @@ async fn get_product_by_slug(
 
 async fn create_order(
     State(state): State<AppState>,
+    Extension(trace): Extension<Trace>,
     Json(payload): Json<CreateOrderRequest>,
 ) -> Result<Json<CreateOrderResponse>, StatusCode> {
     if payload.items.is_empty() {
@@ -384,6 +387,8 @@ async fn create_order(
         });
     }
 
+    trace.mark("lookup_products");
+
     let total_cents = lines.iter().map(|line| line.line_total_cents).sum::<i32>();
 
     let order = sqlx::query!(
@@ -400,6 +405,8 @@ async fn create_order(
         eprintln!("Failed to create order: {err}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+
+    trace.mark("insert_order");
 
     for line in lines {
         sqlx::query!(
@@ -430,10 +437,15 @@ async fn create_order(
         })?;
     }
 
+    trace.mark("insert_order_items");
+
     tx.commit().await.map_err(|err| {
         eprintln!("Failed to commit order transaction: {err}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+
+    trace.mark("commit");
+    trace.mark("response");
 
     Ok(Json(CreateOrderResponse {
         order_id: order.id,
@@ -1249,7 +1261,8 @@ async fn main() {
             metrics,
             metrics::middleware::record_metrics,
         ))
-        .layer(CorsLayer::permissive());
+        .layer(CorsLayer::permissive())
+        .layer(from_fn(tracing::middleware::trace_requests));
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
         .await
